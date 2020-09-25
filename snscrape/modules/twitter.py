@@ -1,109 +1,38 @@
 import bs4
 import datetime
-import email.utils
-import itertools
 import json
 import random
 import logging
 import re
 import snscrape.base
-import string
 import time
 import typing
 import urllib.parse
 
 
 logger = logging.getLogger(__name__)
-_API_AUTHORIZATION_HEADER = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
 
 
 class Tweet(typing.NamedTuple, snscrape.base.Item):
 	url: str
 	date: datetime.datetime
 	content: str
-	renderedContent: str
 	id: int
-	username: str # Deprecated, use user['username'] instead
-	user: 'User'
+	username: str
 	outlinks: list
-	outlinksss: str # Deprecated, use outlinks instead
+	outlinksss: str
 	tcooutlinks: list
-	tcooutlinksss: str # Deprecated, use tcooutlinks instead
-	replyCount: int
-	retweetCount: int
-	likeCount: int
-	quoteCount: int
-	conversationId: int
-	lang: str
-	source: str
-	media: typing.Optional[typing.List['Medium']] = None
-	retweetedTweet: typing.Optional['Tweet'] = None
-	quotedTweet: typing.Optional['Tweet'] = None
-	mentionedUsers: typing.Optional[typing.List['User']] = None
+	tcooutlinksss: str
+	retweet: str
+	favorite: str
+	hashtags: str
 
 	def __str__(self):
 		return self.url
 
 
-class Medium:
-	pass
-
-
-class Photo(typing.NamedTuple, Medium):
-	previewUrl: str
-	fullUrl: str
-	type: str = 'photo'
-
-
-class VideoVariant(typing.NamedTuple):
-	contentType: str
-	url: str
-	bitrate: typing.Optional[int]
-
-
-class Video(typing.NamedTuple, Medium):
-	thumbnailUrl: str
-	variants: typing.List[VideoVariant]
-	duration: float
-	type: str = 'video'
-
-
-class Gif(typing.NamedTuple, Medium):
-	thumbnailUrl: str
-	variants: typing.List[VideoVariant]
-	type: str = 'gif'
-
-
-class DescriptionURL(typing.NamedTuple):
-	text: str
-	url: str
-	tcourl: str
-	indices: typing.Tuple[int, int]
-
-
-class User(typing.NamedTuple, snscrape.base.Entity):
-	# Most fields can be None if they're not known.
-
+class Account(typing.NamedTuple, snscrape.base.Item):
 	username: str
-	displayname: str
-	id: str # Seems to always be numeric, but the API returns it as a string, so it might also contain other things in the future
-	description: typing.Optional[str] = None # Description as it's displayed on the web interface with URLs replaced
-	rawDescription: typing.Optional[str] = None # Raw description with the URL(s) intact
-	descriptionUrls: typing.Optional[typing.List[DescriptionURL]] = None
-	verified: typing.Optional[bool] = None
-	created: typing.Optional[datetime.datetime] = None
-	followersCount: typing.Optional[int] = None
-	friendsCount: typing.Optional[int] = None
-	statusesCount: typing.Optional[int] = None
-	favouritesCount: typing.Optional[int] = None
-	listedCount: typing.Optional[int] = None
-	mediaCount: typing.Optional[int] = None
-	location: typing.Optional[str] = None
-	protected: typing.Optional[bool] = None
-	linkUrl: typing.Optional[str] = None
-	linkTcourl: typing.Optional[str] = None
-	profileImageUrl: typing.Optional[str] = None
-	profileBannerUrl: typing.Optional[str] = None
 
 	@property
 	def url(self):
@@ -113,7 +42,7 @@ class User(typing.NamedTuple, snscrape.base.Entity):
 		return self.url
 
 
-class TwitterOldDesignScraper(snscrape.base.Scraper):
+class TwitterCommonScraper(snscrape.base.Scraper):
 	def _feed_to_items(self, feed):
 		for tweet in feed:
 			username = tweet.find('span', 'username').find('b').text
@@ -160,75 +89,95 @@ class TwitterOldDesignScraper(snscrape.base.Scraper):
 		return True, None
 
 
-class TwitterAPIScraper(snscrape.base.Scraper):
-	def __init__(self, baseUrl, **kwargs):
-		super().__init__(**kwargs)
-		self._baseUrl = baseUrl
-		self._guestToken = None
-		self._userAgent = f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.{random.randint(0, 9999)} Safari/537.{random.randint(0, 99)}'
-		self._apiHeaders = {
-			'User-Agent': self._userAgent,
-			'Authorization': _API_AUTHORIZATION_HEADER,
-			'Referer': self._baseUrl,
-		}
+class TwitterSearchScraper(TwitterCommonScraper):
+	name = 'twitter-search'
 
-	def _ensure_guest_token(self, url = None):
-		if self._guestToken is not None:
-			return
-		logger.info('Retrieving guest token')
-		r = self._get(self._baseUrl if url is None else url, headers = {'User-Agent': self._userAgent})
+	def __init__(self, query, cursor = None, **kwargs):
+		super().__init__(**kwargs)
+		self._query = query
+		self._cursor = cursor
+		self._userAgent = f'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.{random.randint(0, 9999)} Safari/537.{random.randint(0, 99)}'
+		self._baseUrl = 'https://twitter.com/search?' + urllib.parse.urlencode({'f': 'live', 'lang': 'en', 'q': self._query, 'src': 'spelling_expansion_revert_click'})
+
+	def _get_guest_token(self):
+		logger.info(f'Retrieving guest token from search page')
+		r = self._get(self._baseUrl, headers = {'User-Agent': self._userAgent})
 		match = re.search(r'document\.cookie = decodeURIComponent\("gt=(\d+); Max-Age=10800; Domain=\.twitter\.com; Path=/; Secure"\);', r.text)
 		if match:
 			logger.debug('Found guest token in HTML')
-			self._guestToken = match.group(1)
+			return match.group(1)
 		if 'gt' in r.cookies:
 			logger.debug('Found guest token in cookies')
-			self._guestToken = r.cookies['gt']
-		if self._guestToken:
-			self._session.cookies.set('gt', self._guestToken, domain = '.twitter.com', path = '/', secure = True, expires = time.time() + 10800)
-			self._apiHeaders['x-guest-token'] = self._guestToken
-			return
+			return r.cookies['gt']
 		raise snscrape.base.ScraperException('Unable to find guest token')
 
-	def _unset_guest_token(self):
-		self._guestToken = None
-		del self._session.cookies['gt']
-		del self._apiHeaders['x-guest-token']
-
-	def _check_api_response(self, r):
+	def _check_scroll_response(self, r):
 		if r.status_code == 429:
-			self._unset_guest_token()
-			self._ensure_guest_token()
-			return False, 'rate-limited'
-		if r.headers.get('content-type').replace(' ', '') != 'application/json;charset=utf-8':
-			return False, 'content type is not JSON'
+			# Accept a 429 response as "valid" to prevent retries; handled explicitly in get_items
+			return True, None
+		if r.headers.get('content-type') != 'application/json;charset=utf-8':
+			return False, f'content type is not JSON'
 		if r.status_code != 200:
-			return False, 'non-200 status code'
+			return False, f'non-200 status code'
 		return True, None
 
-	def _get_api_data(self, endpoint, params):
-		self._ensure_guest_token()
-		r = self._get(endpoint, params = params, headers = self._apiHeaders, responseOkCallback = self._check_api_response)
-		try:
-			obj = r.json()
-		except json.JSONDecodeError as e:
-			raise snscrape.base.ScraperException('Received invalid JSON from Twitter') from e
-		return obj
-
-	def _iter_api_data(self, endpoint, params, paginationParams = None, cursor = None):
-		# Iterate over endpoint with params/paginationParams, optionally starting from a cursor
-		# Handles guest token extraction using the baseUrl passed to __init__ etc.
-		# Order from params and paginationParams is preserved. To insert the cursor at a particular location, insert a 'cursor' key into paginationParams there (value is overwritten).
-		if cursor is None:
-			reqParams = params
-		else:
-			reqParams = paginationParams.copy()
-			reqParams['cursor'] = cursor
-		stopOnEmptyResponse = False
+	def get_items(self):
+		headers = {
+			'User-Agent': self._userAgent,
+			'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs=1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
+			'Referer': self._baseUrl,
+		}
+		guestToken = None
+		cursor = self._cursor
 		while True:
+			if not guestToken:
+				guestToken = self._get_guest_token()
+				self._session.cookies.set('gt', guestToken, domain = '.twitter.com', path = '/', secure = True, expires = time.time() + 10800)
+				headers['x-guest-token'] = guestToken
+
 			logger.info(f'Retrieving scroll page {cursor}')
-			obj = self._get_api_data(endpoint, reqParams)
-			yield obj
+			params = {
+				'include_profile_interstitial_type': '1',
+				'include_blocking': '1',
+				'include_blocked_by': '1',
+				'include_followed_by': '1',
+				'include_want_retweets': '1',
+				'include_mute_edge': '1',
+				'include_can_dm': '1',
+				'include_can_media_tag': '1',
+				'skip_status': '1',
+				'cards_platform': 'Web-12',
+				'include_cards': '1',
+				'include_composer_source': 'true',
+				'include_ext_alt_text': 'true',
+				'include_reply_count': '1',
+				'tweet_mode': 'extended',
+				'include_entities': 'true',
+				'include_user_entities': 'true',
+				'include_ext_media_color': 'true',
+				'include_ext_media_availability': 'true',
+				'send_error_codes': 'true',
+				'simple_quoted_tweets': 'true',
+				'q': self._query,
+				'tweet_search_mode': 'live',
+				'count': '100',
+				'query_source': 'spelling_expansion_revert_click',
+			}
+			if cursor:
+				params['cursor'] = cursor
+			params['pc'] = '1'
+			params['spelling_corrections'] = '1'
+			params['ext'] = 'mediaStats%2CcameraMoment'
+			r = self._get('https://api.twitter.com/2/search/adaptive.json', params = params, headers = headers, responseOkCallback = self._check_scroll_response)
+			if r.status_code == 429:
+				guestToken = None
+				del self._session.cookies['gt']
+				del headers['x-guest-token']
+				continue
+			try:
+				obj = r.json()
+			except json.JSONDecodeError as e:
+				raise snscrape.base.ScraperException('Received invalid JSON from Twitter') from e
 
 			# No data format test, just a hard and loud crash if anything's wrong :-)
 			newCursor = None
@@ -240,211 +189,31 @@ class TwitterAPIScraper(snscrape.base.Scraper):
 				else:
 					continue
 				for entry in entries:
-					if entry['entryId'] == 'sq-cursor-bottom' or entry['entryId'].startswith('cursor-bottom-'):
+					if entry['entryId'].startswith('sq-I-t-'):
+						if 'tweet' in entry['content']['item']['content']:
+							tweet = obj['globalObjects']['tweets'][entry['content']['item']['content']['tweet']['id']]
+						elif 'tombstone' in entry['content']['item']['content'] and 'tweet' in entry['content']['item']['content']['tombstone']:
+							tweet = obj['globalObjects']['tweets'][entry['content']['item']['content']['tombstone']['tweet']['id']]
+						else:
+							raise snscrape.base.ScraperException(f'Unable to handle entry {entry["entryId"]!r}')
+						tweetID = tweet['id']
+						content = tweet['full_text']
+						username = obj['globalObjects']['users'][tweet['user_id_str']]['screen_name']
+						date = datetime.datetime.strptime(tweet['created_at'], '%a %b %d %H:%M:%S +0000 %Y').replace(tzinfo = datetime.timezone.utc)
+						outlinks = [u['expanded_url'] for u in tweet['entities']['urls']]
+						tcooutlinks = [u['url'] for u in tweet['entities']['urls']]
+						#retweet = [u['retweet_count'] for u in tweet['retweet_count']]
+						hashtags = [u['text'] for u in tweet['entities']['hashtags']]
+						hashtags = ' '.join(hashtags)
+                        
+						url = f'https://twitter.com/{username}/status/{tweetID}'
+						yield Tweet(url, date, content, tweetID, username, outlinks, ' '.join(outlinks), tcooutlinks, ' '.join(tcooutlinks), tweet['retweet_count'], tweet['favorite_count'], hashtags)
+					elif entry['entryId'] == 'sq-cursor-bottom':
 						newCursor = entry['content']['operation']['cursor']['value']
-						if 'stopOnEmptyResponse' in entry['content']['operation']['cursor']:
-							stopOnEmptyResponse = entry['content']['operation']['cursor']['stopOnEmptyResponse']
-			if not newCursor or newCursor == cursor or (stopOnEmptyResponse and self._count_tweets(obj) == 0):
+			if not newCursor or newCursor == cursor:
 				# End of pagination
 				break
 			cursor = newCursor
-			reqParams = paginationParams.copy()
-			reqParams['cursor'] = cursor
-
-	def _count_tweets(self, obj):
-		count = 0
-		for instruction in obj['timeline']['instructions']:
-			if 'addEntries' in instruction:
-				entries = instruction['addEntries']['entries']
-			elif 'replaceEntry' in instruction:
-				entries = [instruction['replaceEntry']['entry']]
-			else:
-				continue
-			for entry in entries:
-				if entry['entryId'].startswith('sq-I-t-') or entry['entryId'].startswith('tweet-'):
-					count += 1
-		return count
-
-	def _instructions_to_tweets(self, obj):
-		# No data format test, just a hard and loud crash if anything's wrong :-)
-		for instruction in obj['timeline']['instructions']:
-			if 'addEntries' in instruction:
-				entries = instruction['addEntries']['entries']
-			elif 'replaceEntry' in instruction:
-				entries = [instruction['replaceEntry']['entry']]
-			else:
-				continue
-			for entry in entries:
-				if entry['entryId'].startswith('sq-I-t-') or entry['entryId'].startswith('tweet-'):
-					if 'tweet' in entry['content']['item']['content']:
-						if 'promotedMetadata' in entry['content']['item']['content']['tweet']: # Promoted tweet aka ads
-							continue
-						if entry['content']['item']['content']['tweet']['id'] not in obj['globalObjects']['tweets']:
-							logger.warning(f'Skipping tweet {entry["content"]["item"]["content"]["tweet"]["id"]} which is not in globalObjects')
-							continue
-						tweet = obj['globalObjects']['tweets'][entry['content']['item']['content']['tweet']['id']]
-					elif 'tombstone' in entry['content']['item']['content'] and 'tweet' in entry['content']['item']['content']['tombstone']:
-						if entry['content']['item']['content']['tombstone']['tweet']['id'] not in obj['globalObjects']['tweets']:
-							logger.warning(f'Skipping tweet {entry["content"]["item"]["content"]["tombstone"]["tweet"]["id"]} which is not in globalObjects')
-							continue
-						tweet = obj['globalObjects']['tweets'][entry['content']['item']['content']['tombstone']['tweet']['id']]
-					else:
-						raise snscrape.base.ScraperException(f'Unable to handle entry {entry["entryId"]!r}')
-					yield self._tweet_to_tweet(tweet, obj)
-
-	def _tweet_to_tweet(self, tweet, obj):
-		# Transforms a Twitter API tweet object into a Tweet
-		kwargs = {}
-		kwargs['id'] = tweet['id'] if 'id' in tweet else int(tweet['id_str'])
-		kwargs['content'] = tweet['full_text']
-		kwargs['renderedContent'] = self._render_text_with_urls(tweet['full_text'], tweet['entities'].get('urls'))
-		kwargs['username'] = obj['globalObjects']['users'][tweet['user_id_str']]['screen_name']
-		kwargs['user'] = self._user_to_user(obj['globalObjects']['users'][tweet['user_id_str']])
-		kwargs['date'] = email.utils.parsedate_to_datetime(tweet['created_at'])
-		kwargs['outlinks'] = [u['expanded_url'] for u in tweet['entities']['urls']] if 'urls' in tweet['entities'] else []
-		kwargs['outlinksss'] = ' '.join(kwargs['outlinks'])
-		kwargs['tcooutlinks'] = [u['url'] for u in tweet['entities']['urls']] if 'urls' in tweet['entities'] else []
-		kwargs['tcooutlinksss'] = ' '.join(kwargs['tcooutlinks'])
-		kwargs['url'] = f'https://twitter.com/{kwargs["username"]}/status/{kwargs["id"]}'
-		kwargs['replyCount'] = tweet['reply_count']
-		kwargs['retweetCount'] = tweet['retweet_count']
-		kwargs['likeCount'] = tweet['favorite_count']
-		kwargs['quoteCount'] = tweet['quote_count']
-		kwargs['conversationId'] = tweet['conversation_id'] if 'conversation_id' in tweet else int(tweet['conversation_id_str'])
-		kwargs['lang'] = tweet['lang']
-		kwargs['source'] = tweet['source']
-		if 'extended_entities' in tweet and 'media' in tweet['extended_entities']:
-			media = []
-			for medium in tweet['extended_entities']['media']:
-				if medium['type'] == 'photo':
-					if '.' not in medium['media_url_https']:
-						logger.warning(f'Skipping malformed medium URL on tweet {kwargs["id"]}: {medium["media_url_https"]!r} contains no dot')
-						continue
-					baseUrl, format = medium['media_url_https'].rsplit('.', 1)
-					if format not in ('jpg', 'png'):
-						logger.warning(f'Skipping photo with unknown format on tweet {kwargs["id"]}: {format!r}')
-						continue
-					media.append(Photo(
-						previewUrl = f'{baseUrl}?format={format}&name=small',
-						fullUrl = f'{baseUrl}?format={format}&name=large',
-					))
-				elif medium['type'] == 'video' or medium['type'] == 'animated_gif':
-					variants = []
-					for variant in medium['video_info']['variants']:
-						variants.append(VideoVariant(contentType = variant['content_type'], url = variant['url'], bitrate = variant.get('bitrate') or None))
-					mKwargs = {
-						'thumbnailUrl': medium['media_url_https'],
-						'variants': variants,
-					}
-					if medium['type'] == 'video':
-						mKwargs['duration'] = medium['video_info']['duration_millis'] / 1000
-						cls = Video
-					elif medium['type'] == 'animated_gif':
-						cls = Gif
-					media.append(cls(**mKwargs))
-			if media:
-				kwargs['media'] = media
-		kwargs['retweetedTweet'] = self._tweet_to_tweet(obj['globalObjects']['tweets'][tweet['retweeted_status_id_str']], obj) if 'retweeted_status_id_str' in tweet else None
-		if 'quoted_status_id_str' in tweet and tweet['quoted_status_id_str'] in obj['globalObjects']['tweets']:
-			kwargs['quotedTweet'] = self._tweet_to_tweet(obj['globalObjects']['tweets'][tweet['quoted_status_id_str']], obj)
-		kwargs['mentionedUsers'] = [
-			User(username = u['screen_name'], displayname = u['name'], id = u['id'] if 'id' in u else int(u['id_str'])) \
-			for u in tweet['entities']['user_mentions']
-		  ] if 'user_mentions' in tweet['entities'] and tweet['entities']['user_mentions'] else None
-		return Tweet(**kwargs)
-
-	def _render_text_with_urls(self, text, urls):
-		if not urls:
-			return text
-		out = []
-		out.append(text[:urls[0]['indices'][0]])
-		urlsSorted = sorted(urls, key = lambda x: x['indices'][0]) # Ensure that they're in left to right appearance order
-		assert all(url['indices'][1] <= nextUrl['indices'][0] for url, nextUrl in zip(urls, urls[1:])), 'broken URL indices'
-		for url, nextUrl in itertools.zip_longest(urls, urls[1:]):
-			out.append(url['display_url'])
-			out.append(text[url['indices'][1] : nextUrl['indices'][0] if nextUrl is not None else None])
-		return ''.join(out)
-
-	def _user_to_user(self, user):
-		kwargs = {}
-		kwargs['username'] = user['screen_name']
-		kwargs['displayname'] = user['name']
-		kwargs['id'] = user['id'] if 'id' in user else int(user['id_str'])
-		kwargs['description'] = self._render_text_with_urls(user['description'], user['entities']['description'].get('urls'))
-		kwargs['rawDescription'] = user['description']
-		kwargs['descriptionUrls'] = [{'text': x['display_url'], 'url': x['expanded_url'], 'tcourl': x['url'], 'indices': tuple(x['indices'])} for x in user['entities']['description'].get('urls', [])]
-		kwargs['verified'] = user.get('verified')
-		kwargs['created'] = email.utils.parsedate_to_datetime(user['created_at'])
-		kwargs['followersCount'] = user['followers_count']
-		kwargs['friendsCount'] = user['friends_count']
-		kwargs['statusesCount'] = user['statuses_count']
-		kwargs['favouritesCount'] = user['favourites_count']
-		kwargs['listedCount'] = user['listed_count']
-		kwargs['mediaCount'] = user['media_count']
-		kwargs['location'] = user['location']
-		kwargs['protected'] = user.get('protected')
-		kwargs['linkUrl'] = (user['entities']['url']['urls'][0].get('expanded_url') or user.get('url')) if 'url' in user['entities'] else None
-		kwargs['linkTcourl'] = user.get('url')
-		kwargs['profileImageUrl'] = user['profile_image_url_https']
-		kwargs['profileBannerUrl'] = user.get('profile_banner_url')
-		return User(**kwargs)
-
-
-class TwitterSearchScraper(TwitterAPIScraper):
-	name = 'twitter-search'
-
-	def __init__(self, query, cursor = None, **kwargs):
-		super().__init__(baseUrl = 'https://twitter.com/search?' + urllib.parse.urlencode({'f': 'live', 'lang': 'en', 'q': query, 'src': 'spelling_expansion_revert_click'}), **kwargs)
-		self._query = query
-		self._cursor = cursor
-
-	def _check_scroll_response(self, r):
-		if r.status_code == 429:
-			# Accept a 429 response as "valid" to prevent retries; handled explicitly in get_items
-			return True, None
-		if r.headers.get('content-type').replace(' ', '') != 'application/json;charset=utf-8':
-			return False, f'content type is not JSON'
-		if r.status_code != 200:
-			return False, f'non-200 status code'
-		return True, None
-
-	def get_items(self):
-		params = {
-			'include_profile_interstitial_type': '1',
-			'include_blocking': '1',
-			'include_blocked_by': '1',
-			'include_followed_by': '1',
-			'include_want_retweets': '1',
-			'include_mute_edge': '1',
-			'include_can_dm': '1',
-			'include_can_media_tag': '1',
-			'skip_status': '1',
-			'cards_platform': 'Web-12',
-			'include_cards': '1',
-			'include_ext_alt_text': 'true',
-			'include_quote_count': 'true',
-			'include_reply_count': '1',
-			'tweet_mode': 'extended',
-			'include_entities': 'true',
-			'include_user_entities': 'true',
-			'include_ext_media_color': 'true',
-			'include_ext_media_availability': 'true',
-			'send_error_codes': 'true',
-			'simple_quoted_tweets': 'true',
-			'q': self._query,
-			'tweet_search_mode': 'live',
-			'count': '100',
-			'query_source': 'spelling_expansion_revert_click',
-		}
-		paginationParams = params.copy()
-		paginationParams['cursor'] = None
-		for d in (params, paginationParams):
-			d['pc'] = '1'
-			d['spelling_corrections'] = '1'
-			d['ext'] = 'ext=mediaStats%2ChighlightedLabel'
-
-		for obj in self._iter_api_data('https://api.twitter.com/2/search/adaptive.json', params, paginationParams):
-			yield from self._instructions_to_tweets(obj)
 
 	@classmethod
 	def setup_parser(cls, subparser):
@@ -460,102 +229,16 @@ class TwitterUserScraper(TwitterSearchScraper):
 	name = 'twitter-user'
 
 	def __init__(self, username, **kwargs):
-		if not self.is_valid_username(username):
-			raise ValueError('Invalid username')
 		super().__init__(f'from:{username}', **kwargs)
 		self._username = username
 
-	def _get_entity(self):
-		self._ensure_guest_token(f'https://twitter.com/{self._username}')
-		params = {'variables': json.dumps({'screen_name': self._username, 'withHighlightedLabel': True}, separators = (',', ':'))}
-		obj = self._get_api_data('https://api.twitter.com/graphql/-xfUfZsnR_zqjFd-IfrN5A/UserByScreenName', params = urllib.parse.urlencode(params, quote_via=urllib.parse.quote))
-		user = obj['data']['user']
-		rawDescription = user['legacy']['description']
-		description = self._render_text_with_urls(rawDescription, user['legacy']['entities']['description']['urls'])
-		return User(
-			username = user['legacy']['screen_name'],
-			displayname = user['legacy']['name'],
-			id = user['rest_id'],
-			description = description,
-			rawDescription = rawDescription,
-			descriptionUrls = [{'text': x['display_url'], 'url': x['expanded_url'], 'tcourl': x['url'], 'indices': tuple(x['indices'])} for x in user['legacy']['entities']['description']['urls']],
-			verified = user['legacy']['verified'],
-			created = email.utils.parsedate_to_datetime(user['legacy']['created_at']),
-			followersCount = user['legacy']['followers_count'],
-			friendsCount = user['legacy']['friends_count'],
-			statusesCount = user['legacy']['statuses_count'],
-			favouritesCount = user['legacy']['favourites_count'],
-			listedCount = user['legacy']['listed_count'],
-			mediaCount = user['legacy']['media_count'],
-			location = user['legacy']['location'],
-			protected = user['legacy']['protected'],
-			linkUrl = user['legacy']['entities']['url']['urls'][0]['expanded_url'] if 'url' in user['legacy']['entities'] else None,
-			linkTcourl = user['legacy'].get('url'),
-			profileImageUrl = user['legacy']['profile_image_url_https'],
-			profileBannerUrl = user['legacy'].get('profile_banner_url'),
-		  )
-
-	@staticmethod
-	def is_valid_username(s):
-		return 1 <= len(s) <= 15 and s.strip(string.ascii_letters + string.digits + '_') == ''
-
 	@classmethod
 	def setup_parser(cls, subparser):
-		def username(s):
-			if cls.is_valid_username(s):
-				return s
-			raise ValueError('Invalid username')
-
-		subparser.add_argument('username', type = username, help = 'A Twitter username (without @)')
+		subparser.add_argument('username', help = 'A Twitter username (without @)')
 
 	@classmethod
 	def from_args(cls, args):
 		return cls(args.username, retries = args.retries)
-
-
-class TwitterProfileScraper(TwitterUserScraper):
-	name = 'twitter-profile'
-
-	def __init__(self, *args, **kwargs):
-		super().__init__(*args, **kwargs)
-		self._baseUrl = f'https://twitter.com/{self._username}'
-
-	def get_items(self):
-		user = self.entity
-		params = {
-			'include_profile_interstitial_type': '1',
-			'include_blocking': '1',
-			'include_blocked_by': '1',
-			'include_followed_by': '1',
-			'include_want_retweets': '1',
-			'include_mute_edge': '1',
-			'include_can_dm': '1',
-			'include_can_media_tag': '1',
-			'skip_status': '1',
-			'cards_platform': 'Web-12',
-			'include_cards': '1',
-			'include_ext_alt_text': 'true',
-			'include_quote_count': 'true',
-			'include_reply_count': '1',
-			'tweet_mode': 'extended',
-			'include_entities': 'true',
-			'include_user_entities': 'true',
-			'include_ext_media_color': 'true',
-			'include_ext_media_availability': 'true',
-			'send_error_codes': 'true',
-			'simple_quoted_tweets': 'true',
-			'include_tweet_replies': 'true',
-			'userId': user.id,
-			'count': '100',
-		}
-		paginationParams = params.copy()
-		paginationParams['cursor'] = None
-		for d in (params, paginationParams):
-			d['ext'] = 'ext=mediaStats%2ChighlightedLabel'
-
-		for obj in self._iter_api_data(f'https://api.twitter.com/2/timeline/profile/{user.id}.json', params, paginationParams):
-			yield from self._instructions_to_tweets(obj)
-
 
 class TwitterHashtagScraper(TwitterSearchScraper):
 	name = 'twitter-hashtag'
@@ -573,7 +256,7 @@ class TwitterHashtagScraper(TwitterSearchScraper):
 		return cls(args.hashtag, retries = args.retries)
 
 
-class TwitterThreadScraper(TwitterOldDesignScraper):
+class TwitterThreadScraper(TwitterCommonScraper):
 	name = 'twitter-thread'
 
 	def __init__(self, tweetID = None, **kwargs):
@@ -583,7 +266,7 @@ class TwitterThreadScraper(TwitterOldDesignScraper):
 		self._tweetID = tweetID
 
 	def get_items(self):
-		headers = {'User-Agent': f'Opera/9.80 (Windows NT 6.1; WOW64) Presto/2.12.388 Version/12.18 Bot'}
+		headers = {'User-Agent': f'Opera/9.80 (Windows NT 6.1; WOW64) Presto/2.12.388 Version/12.18'}
 
 		# Fetch the page of the last tweet in the thread
 		r = self._get(f'https://twitter.com/user/status/{self._tweetID}', headers = headers)
@@ -646,7 +329,60 @@ class TwitterListPostsScraper(TwitterSearchScraper):
 
 	@classmethod
 	def setup_parser(cls, subparser):
-		subparser.add_argument('list', help = 'A Twitter list ID or a string of the form "username/listname" (replace spaces with dashes)')
+		subparser.add_argument('list', help = 'A Twitter list, formatted as "username/listname"')
+
+	@classmethod
+	def from_args(cls, args):
+		return cls(args.list, retries = args.retries)
+
+
+class TwitterListMembersScraper(TwitterCommonScraper):
+	name = 'twitter-list-members'
+
+	def __init__(self, listName, **kwargs):
+		super().__init__(**kwargs)
+		self._user, self._list = listName.split('/')
+
+	def get_items(self):
+		headers = {'User-Agent': f'Opera/9.80 (Windows NT 6.1; WOW64) Presto/2.12.388 Version/12.18'}
+
+		baseUrl = f'https://twitter.com/{self._user}/lists/{self._list}/members'
+		r = self._get(baseUrl, headers = headers)
+		if r.status_code != 200:
+			logger.warning('List not found')
+			return
+		soup = bs4.BeautifulSoup(r.text, 'lxml')
+		container = soup.find('div', 'stream-container')
+		if not container:
+			raise snscrape.base.ScraperException('Unable to find container')
+		items = container.find_all('li', 'js-stream-item')
+		if not items:
+			logger.warning('Empty list')
+			return
+		for item in items:
+			yield Account(username = item.find('div', 'account')['data-screen-name'])
+
+		if not container.has_attr('data-min-position') or container['data-min-position'] == '':
+			return
+		maxPosition = container['data-min-position']
+		while True:
+			r = self._get(
+				f'{baseUrl}/timeline?include_available_features=1&include_entities=1&max_position={maxPosition}&reset_error_state=false',
+				headers = headers,
+				responseOkCallback = self._check_json_callback
+			  )
+			obj = json.loads(r.text)
+			soup = bs4.BeautifulSoup(obj['items_html'], 'lxml')
+			items = soup.find_all('li', 'js-stream-item')
+			for item in items:
+				yield Account(username = item.find('div', 'account')['data-screen-name'])
+			if not obj['has_more_items']:
+				break
+			maxPosition = obj['min_position']
+
+	@classmethod
+	def setup_parser(cls, subparser):
+		subparser.add_argument('list', help = 'A Twitter list, formatted as "username/listname"')
 
 	@classmethod
 	def from_args(cls, args):
