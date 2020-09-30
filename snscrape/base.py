@@ -72,7 +72,7 @@ class Scraper:
 		This is the method implemented by subclasses for doing the actual retrieval/entity object creation. For accessing the scraper's entity, use the entity property.'''
 		return None
 
-	@functools.cached_property
+	#@functools.cached_property
 	def entity(self):
 		return self._get_entity()
 
