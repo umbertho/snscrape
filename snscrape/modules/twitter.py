@@ -26,6 +26,7 @@ class Tweet(typing.NamedTuple, snscrape.base.Item):
 	retweet: str
 	favorite: str
 	hashtags: str
+	media: list
 
 	def __str__(self):
 		return self.url
@@ -196,6 +197,8 @@ class TwitterSearchScraper(TwitterCommonScraper):
 							tweet = obj['globalObjects']['tweets'][entry['content']['item']['content']['tombstone']['tweet']['id']]
 						else:
 							raise snscrape.base.ScraperException(f'Unable to handle entry {entry["entryId"]!r}')
+						#print(str(tweet['id']))
+						media = []
 						tweetID = tweet['id']
 						content = tweet['full_text']
 						username = obj['globalObjects']['users'][tweet['user_id_str']]['screen_name']
@@ -204,10 +207,13 @@ class TwitterSearchScraper(TwitterCommonScraper):
 						tcooutlinks = [u['url'] for u in tweet['entities']['urls']]
 						#retweet = [u['retweet_count'] for u in tweet['retweet_count']]
 						hashtags = [u['text'] for u in tweet['entities']['hashtags']]
+						if 'media' in tweet['entities']:
+							#print(str(tweet['entities']['media']))
+							media = [u['media_url'] for u in tweet['entities']['media']]
 						hashtags = ' '.join(hashtags)
-                        
+						#print(str(tweet))
 						url = f'https://twitter.com/{username}/status/{tweetID}'
-						yield Tweet(url, date, content, tweetID, username, outlinks, ' '.join(outlinks), tcooutlinks, ' '.join(tcooutlinks), tweet['retweet_count'], tweet['favorite_count'], hashtags)
+						yield Tweet(url, date, content, tweetID, username, outlinks, ' '.join(outlinks), tcooutlinks, ' '.join(tcooutlinks), tweet['retweet_count'], tweet['favorite_count'], hashtags, media)
 					elif entry['entryId'] == 'sq-cursor-bottom':
 						newCursor = entry['content']['operation']['cursor']['value']
 			if not newCursor or newCursor == cursor:
